@@ -216,6 +216,7 @@ def parse_time(raw: Optional[str]) -> datetime:
 # ─── Orquestador ───────────────────────────────────────────────────────────────
 
 def run():
+    print("=== INICIO RUN CONVERSIONES ===", flush=True)
     webflow   = WebflowClient(os.getenv("WEBFLOW_API_TOKEN"))
     pipedrive = PipedriveClient(os.getenv("PIPEDRIVE_API_TOKEN"))
     gads      = GoogleAdsUploader(os.getenv("GOOGLE_ADS_CUSTOMER_ID"))
@@ -272,6 +273,7 @@ def run():
                 uploaded += gads.upload_conversion(gclid, CONVERSION_CLIENT_WON, wt)
 
     log.info(f"Proceso completado. Conversiones enviadas en esta ejecución: {uploaded}")
+    print(f"=== FIN RUN. Total subidas: {uploaded} ===", flush=True)
 
 
 if __name__ == "__main__":
