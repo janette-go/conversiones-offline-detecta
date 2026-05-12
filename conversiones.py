@@ -4,12 +4,9 @@ Conversiones Offline a Google Ads
 Flujo: Webflow (submissions con GCLID) → Pipedrive (calificación) → Google Ads
 """
 
-import hashlib
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import requests
@@ -28,8 +25,6 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
-
-STATE_FILE = "state.json"
 
 CONVERSION_QUALIFIED_LEAD = os.getenv("CONVERSION_QUALIFIED_LEAD", "Qualified Lead")
 CONVERSION_SQL            = os.getenv("CONVERSION_SQL", "SQL")
@@ -54,7 +49,6 @@ class WebflowClient:
         return r.json()
 
     def get_all_submissions(self, site_id: str) -> list:
-        """Obtiene todas las form submissions del sitio con paginación."""
         submissions, offset, limit = [], 0, 100
         while True:
             data = self._get(f"/sites/{site_id}/form_submissions", {"limit": limit, "offset": offset})
@@ -83,10 +77,7 @@ class PipedriveClient:
         r.raise_for_status()
         return r.json()
 
-    # ── Campos custom de deals ─────────────────────────────────────────────────
-
     def _deal_field_key(self, label: str) -> Optional[str]:
-        """Resuelve el hash key de un campo personalizado de deal por su nombre."""
         if not self._deal_fields_cache:
             fields = self._get("/dealFields").get("data", [])
             self._deal_fields_cache = {f["name"]: f["key"] for f in fields}
@@ -105,8 +96,6 @@ class PipedriveClient:
         val = deal.get(key)
         return val is not None and val != ""
 
-    # ── Búsqueda por email ─────────────────────────────────────────────────────
-
     def search_person_by_email(self, email: str) -> Optional[dict]:
         data = self._get("/persons/search", {"term": email, "fields": "email", "exact_match": 1})
         items = data.get("data", {}).get("items", [])
@@ -114,8 +103,6 @@ class PipedriveClient:
 
     def get_person_deals(self, person_id: int) -> list:
         return self._get(f"/persons/{person_id}/deals", {"status": "all_not_deleted"}).get("data") or []
-
-    # ── Calificación (se evalúa por deal) ─────────────────────────────────────
 
     def is_qualified_lead(self, deal: dict) -> bool:
         return self._deal_field_not_empty(deal, "Calificación del Lead")
@@ -215,46 +202,7 @@ class GoogleAdsUploader:
             return False
 
 
-# ─── Estado local (evita duplicados entre ejecuciones) ────────────────────────
-
-def load_state() -> dict:
-    if Path(STATE_FILE).exists():
-        with open(STATE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_state(state: dict):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-
-
-def conversion_key(gclid: str, action: str) -> str:
-    return hashlib.sha256(f"{gclid}:{action}".encode()).hexdigest()[:16]
-
-
-def maybe_upload(
-    gads: GoogleAdsUploader,
-    state: dict,
-    gclid: str,
-    action: str,
-    when: datetime,
-    email: str,
-) -> bool:
-    key = conversion_key(gclid, action)
-    if key in state:
-        log.info(f"  — '{action}' ya registrado, omitiendo")
-        return False
-    ok = gads.upload_conversion(gclid, action, when)
-    if ok:
-        state[key] = {
-            "action": action,
-            "email": email,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        }
-        save_state(state)
-    return ok
-
+# ─── Helpers ───────────────────────────────────────────────────────────────────
 
 def parse_time(raw: Optional[str]) -> datetime:
     if raw:
@@ -271,7 +219,6 @@ def run():
     webflow   = WebflowClient(os.getenv("WEBFLOW_API_TOKEN"))
     pipedrive = PipedriveClient(os.getenv("PIPEDRIVE_API_TOKEN"))
     gads      = GoogleAdsUploader(os.getenv("GOOGLE_ADS_CUSTOMER_ID"))
-    state     = load_state()
     site_id   = os.getenv("WEBFLOW_SITE_ID")
 
     log.info(f"Obteniendo form submissions de Webflow (sitio {site_id})…")
@@ -297,9 +244,9 @@ def run():
     uploaded = 0
 
     for lead in leads:
-        gclid       = lead["gclid"]
-        email       = lead["email"]
-        lead_time   = parse_time(lead["submitted_at"])
+        gclid     = lead["gclid"]
+        email     = lead["email"]
+        lead_time = parse_time(lead["submitted_at"])
 
         log.info(f"Lead {email} | gclid={gclid[:16]}…")
 
@@ -315,16 +262,16 @@ def run():
 
         for deal in deals:
             if pipedrive.is_qualified_lead(deal):
-                uploaded += maybe_upload(gads, state, gclid, CONVERSION_QUALIFIED_LEAD, lead_time, email)
+                uploaded += gads.upload_conversion(gclid, CONVERSION_QUALIFIED_LEAD, lead_time)
 
             if pipedrive.is_sql(deal):
-                uploaded += maybe_upload(gads, state, gclid, CONVERSION_SQL, lead_time, email)
+                uploaded += gads.upload_conversion(gclid, CONVERSION_SQL, lead_time)
 
             wt = pipedrive.won_time(deal)
             if wt:
-                uploaded += maybe_upload(gads, state, gclid, CONVERSION_CLIENT_WON, wt, email)
+                uploaded += gads.upload_conversion(gclid, CONVERSION_CLIENT_WON, wt)
 
-    log.info(f"Proceso completado. Conversiones subidas en esta ejecución: {uploaded}")
+    log.info(f"Proceso completado. Conversiones enviadas en esta ejecución: {uploaded}")
 
 
 if __name__ == "__main__":
