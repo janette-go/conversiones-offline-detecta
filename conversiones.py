@@ -236,7 +236,7 @@ def run():
             continue
         gclid = (s.get("formResponse", {}).get("gclid") or "").strip()
         email = (s.get("formResponse", {}).get("email") or "").strip().lower()
-        if not gclid or not email:
+        if not gclid or gclid == "sin_especificar" or not email:
             continue
         leads.append({"gclid": gclid, "email": email, "submitted_at": submitted_at})
 
